@@ -110,7 +110,8 @@ class Coach:
 					w, features = self.encoder.forward(x, return_latents=True)
                 
 				features = self.net.mapper(features, txt_embed_mismatch)
-				w_hat = w + 0.1 * self.encoder.forward_features(features)
+				w_hat = w + self.encoder.forward_features(features)
+				# w_hat = w + 0.1 * self.encoder.forward_features(features)
 				# w_hat = w + 0.1 * self.net.mapper(features, txt_embed_mismatch)
 				y_hat, w_hat = self.net.decoder([w_hat], input_is_latent=True, return_latents=True, randomize_noise=False, truncation=1)
 				y_hat = self.face_pool(y_hat)
@@ -173,7 +174,8 @@ class Coach:
                 
 				w, features = self.encoder.forward(x, return_latents=True)
 				features = self.net.mapper(features, txt_embed_mismatch)
-				w_hat = w + 0.05 * self.encoder.forward_features(features)
+				w_hat = w + self.encoder.forward_features(features)
+				# w_hat = w + 0.1 * self.encoder.forward_features(features)
 				# w_hat = w + 0.1 * self.net.mapper(features, txt_embed_mismatch)
 				y_hat, w_hat = self.net.decoder([w_hat], input_is_latent=True, return_latents=True, randomize_noise=False, truncation=1)
 				y_hat = self.face_pool(y_hat)

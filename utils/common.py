@@ -81,6 +81,25 @@ def vis_faces(log_hooks, txt, mismatch_text):
 		vis_faces_with_age(hooks_dict, fig, gs, i)
 	plt.tight_layout()
 	return fig
+
+# This is to plot the cycle too
+def vis_faces3(log_hooks, txt, mismatch_text):
+	display_count = len(log_hooks)
+	fig = plt.figure(figsize=(12, 3 * display_count))
+	gs = fig.add_gridspec(display_count, 3)
+	plt.gcf().text(0.02, 0.89, 'Original: {}'.format(txt[0]), fontsize=8)
+	if mismatch_text:
+		plt.gcf().text(0.02, 0.49, 'Mismatch: {}'.format(txt[-1]), fontsize=8)
+		plt.gcf().text(0.02, 0.01, 'Mismatch: {}'.format(txt[0]), fontsize=8)
+	else:
+		plt.gcf().text(0.02, 0.49, 'Mismatch: {}'.format(txt[0]), fontsize=8)
+		plt.gcf().text(0.02, 0.01, 'Mismatch: {}'.format(txt[1]), fontsize=8)
+	plt.gcf().text(0.02, 0.41, 'Original: {}'.format(txt[1]), fontsize=8)
+	for i in range(display_count):
+		hooks_dict = log_hooks[i]
+		vis_faces_with_age3(hooks_dict, fig, gs, i)
+	plt.tight_layout()
+	return fig
  
 def vis_faces_two(log_hooks, txt, mismatch_text):
 	display_count = len(log_hooks)
@@ -114,6 +133,21 @@ def vis_faces_with_age(hooks_dict, fig, gs, i):
 	fig.add_subplot(gs[i, 2])
 	plt.imshow(hooks_dict['output_face'])
 	plt.title('Output\nTarget Sim={:.2f}\n'.format(float(hooks_dict['diff_target'])))
+	plt.axis('off')
+
+# This is to plot the cycle too
+def vis_faces_with_age3(hooks_dict, fig, gs, i):
+	fig.add_subplot(gs[i, 0])
+	plt.imshow(hooks_dict['input_face'])
+	plt.title('Input\nOut Sim={:.2f}\n'.format(float(hooks_dict['diff_input'])))
+	plt.axis('off')
+	fig.add_subplot(gs[i, 1])
+	plt.imshow(hooks_dict['output_face'])
+	plt.title('Output\nTarget Sim={:.2f}\n'.format(float(hooks_dict['diff_input'])))
+	plt.axis('off')
+	fig.add_subplot(gs[i, 2])
+	plt.imshow(hooks_dict['recovered_face'])
+	plt.title('Recovered\n')
 	plt.axis('off')
     
 def vis_faces_with_age2(hooks_dict, fig, gs, i):

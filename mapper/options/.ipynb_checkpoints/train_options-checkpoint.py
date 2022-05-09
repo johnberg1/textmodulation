@@ -57,6 +57,8 @@ class TrainOptions:
 		self.parser.add_argument('--w_norm_lambda', default=0, type=float, help='W-norm loss multiplier factor')
         
 		self.parser.add_argument('--id_lambda', default=0.3, type=float, help='ID loss multiplier factor')
+		self.parser.add_argument('--cycle_lambda', default=0, type=float, help='Cycle loss multiplier factor')
+        
 		self.parser.add_argument('--maintain_color_lambda', default=0.02, type=float, help='Color retention loss multiplier factor')
 		self.parser.add_argument('--background_lambda', default=1.0, type=float, help='Background loss multiplier factor')
 		self.parser.add_argument('--latent_l2_lambda', default=0.8, type=float, help='Latent L2 loss multiplier factor')

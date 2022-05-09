@@ -47,7 +47,8 @@ class Coach:
 		self.mse_loss = nn.MSELoss().to(self.device).eval()
 		self.directional_loss = DirectionalCLIPLoss(self.clip_model)
 		self.lpips_loss = LPIPS(net_type='alex').to(self.device).eval()
-		self.w_norm_loss = w_norm.WNormLoss(opts=self.opts)
+		self.w_norm_loss = w_norm.WNormLoss(opts=self.opts)        
+		# self.clip_loss = CLIPLoss(self.clip_model)
 		# self.latent_l2_loss = nn.MSELoss().to(self.device).eval()
 		# self.background_loss = bg_loss.BackgroundLoss(self.opts).to(self.device).eval()
 		# self.image_embedding_loss = image_embedding_loss.ImageEmbddingLoss()
@@ -105,24 +106,45 @@ class Coach:
 				else:
 					txt_embed_mismatch = txt_embed_original
 					text_mismatch = text_original
-                
+                    
+                # Forward pass
 				with torch.no_grad():
 					w, features = self.encoder.forward(x, return_latents=True)
                 
 				features = self.net.mapper(features, txt_embed_mismatch)
-				w_hat = w + self.encoder.forward_features(features)
-				# w_hat = w + 0.1 * self.encoder.forward_features(features)
+				# w_hat = w + self.encoder.forward_features(features)
+				w_hat = w + 0.1 * self.encoder.forward_features(features)
 				# w_hat = w + 0.1 * self.net.mapper(features, txt_embed_mismatch)
 				y_hat, w_hat = self.net.decoder([w_hat], input_is_latent=True, return_latents=True, randomize_noise=False, truncation=1)
 				y_hat = self.face_pool(y_hat)
-				loss, loss_dict, id_logs = self.calc_loss(x, y, y_hat, text_original, text_mismatch, w_hat, y, mismatch_text)
+				loss, loss_dict, id_logs = self.calc_loss(x, y, y_hat, text_original, text_mismatch, w_hat, y, mismatch_text, data_type="real")
+				loss.backward()
+                
+                # Cycle pass
+				y_hat_clone = y_hat.clone().detach().requires_grad_(True)
+				txt_embed_clone = txt_embed_original.clone().detach().requires_grad_(True)
+				text_clone = text_original
+                
+				with torch.no_grad():
+					w_cycle, features_cycle = self.encoder.forward(y_hat_clone, return_latents=True)
+				features_cycle = self.net.mapper(features_cycle, txt_embed_clone)
+				w_hat_cycle = w_cycle + 0.1 * self.encoder.forward_features(features_cycle)
+				y_recovered, w_hat_cycle = self.net.decoder([w_hat_cycle], input_is_latent=True, return_latents=True, randomize_noise=False, truncation=1)
+				y_recovered = self.face_pool(y_recovered)
+				loss, cycle_loss_dict, cycle_id_logs = self.calc_loss(x, y, y_recovered, text_mismatch, text_clone, w_hat_cycle, y_hat_clone, mismatch_text, data_type="cycle")
 				loss.backward()
 				self.optimizer.step()
+                
+                # combine the logs of both forwards
+				for idx, cycle_log in enumerate(cycle_id_logs):
+					id_logs[idx].update(cycle_log)
+				loss_dict.update(cycle_loss_dict)
+				loss_dict["loss"] = loss_dict["loss_real"] + loss_dict["loss_cycle"]
                 
                 # Logging related
 				if self.global_step % self.opts.image_interval == 0 or \
 						(self.global_step < 1000 and self.global_step % 25 == 0):
-					self.parse_and_log_images(id_logs, x, y, y_hat, txt, mismatch_text,
+					self.parse_and_log_images(id_logs, x, y, y_hat, y_recovered, txt, mismatch_text,
 											  title='images/train/faces')
 
 				if self.global_step % self.opts.board_interval == 0:
@@ -163,7 +185,7 @@ class Coach:
 
 				
 
-				mismatch_text = random.random() <= (3. / 4)
+				mismatch_text = random.random() <= (3. / 4) # change
 				if mismatch_text:
 					txt_embed_mismatch = torch.roll(txt_embed_original, 1, dims=0)
 					text_mismatch = torch.roll(text_original, 1, dims=0)
@@ -171,21 +193,39 @@ class Coach:
 					txt_embed_mismatch = txt_embed_original
 					text_mismatch = text_original
                     
-                
+                # Forward pass
 				w, features = self.encoder.forward(x, return_latents=True)
 				features = self.net.mapper(features, txt_embed_mismatch)
-				w_hat = w + self.encoder.forward_features(features)
-				# w_hat = w + 0.1 * self.encoder.forward_features(features)
+				# w_hat = w + self.encoder.forward_features(features)
+				w_hat = w + 0.1 * self.encoder.forward_features(features)
 				# w_hat = w + 0.1 * self.net.mapper(features, txt_embed_mismatch)
 				y_hat, w_hat = self.net.decoder([w_hat], input_is_latent=True, return_latents=True, randomize_noise=False, truncation=1)
 				y_hat = self.face_pool(y_hat)
 				loss, cur_loss_dict, id_logs = self.calc_loss(x, y, y_hat, text_original, text_mismatch, w_hat, y, mismatch_text)
                 
+                # Cycle pass
+				y_hat_clone = y_hat.clone().detach().requires_grad_(True)
+				txt_embed_clone = txt_embed_original.clone().detach().requires_grad_(True)
+				text_clone = text_original
+                
+				w_cycle, features_cycle = self.encoder.forward(y_hat_clone, return_latents=True)
+				features_cycle = self.net.mapper(features_cycle, txt_embed_clone)
+				w_hat_cycle = w_cycle + 0.1 * self.encoder.forward_features(features_cycle)
+				y_recovered, w_hat_cycle = self.net.decoder([w_hat_cycle], input_is_latent=True, return_latents=True, randomize_noise=False, truncation=1)
+				y_recovered = self.face_pool(y_recovered)
+				loss, cycle_loss_dict, cycle_id_logs = self.calc_loss(x, y, y_recovered, text_mismatch, text_clone, w_hat_cycle, y_hat_clone, mismatch_text, data_type="cycle")
+                
+				# combine the logs of both forwards
+				for idx, cycle_log in enumerate(cycle_id_logs):
+					id_logs[idx].update(cycle_log)
+				cur_loss_dict.update(cycle_loss_dict)
+				cur_loss_dict["loss"] = cur_loss_dict["loss_real"] + cur_loss_dict["loss_cycle"]
+                
 			agg_loss_dict.append(cur_loss_dict)
 
 			
 			# Logging related
-			self.parse_and_log_images(id_logs, x, y, y_hat, txt, mismatch_text, title='images/test/faces',
+			self.parse_and_log_images(id_logs, x, y, y_hat, y_recovered, txt, mismatch_text, title='images/test/faces',
 									  subscript='{:04d}'.format(batch_idx))
 
 			# For first step just do sanity test on small amount of data
@@ -237,71 +277,34 @@ class Coach:
 		print("Number of test samples: {}".format(len(test_dataset)), flush=True)
 		return train_dataset, test_dataset
 
-# 	def calc_loss(self, w, x, w_hat, x_hat, hairstyle_text_inputs, color_text_inputs, hairstyle_tensor, color_tensor, selected_description):
-# 		loss_dict = {}
-# 		loss = 0.0
-# 		if self.opts.id_lambda > 0:
-# 			loss_id, sim_improvement = self.id_loss(x_hat, x)
-# 			loss_dict['loss_id'] = float(loss_id)
-# 			loss_dict['id_improve'] = float(sim_improvement)
-# 			loss = loss_id * self.opts.id_lambda * self.opts.attribute_preservation_lambda
-
-# 		if self.opts.text_manipulation_lambda > 0:
-# 			if hairstyle_text_inputs.shape[1] != 1:
-# 				loss_text_hairstyle = self.clip_loss(x_hat, hairstyle_text_inputs).mean()
-# 				loss_dict['loss_text_hairstyle'] = float(loss_text_hairstyle)
-# 				loss += loss_text_hairstyle * self.opts.text_manipulation_lambda
-# 			if color_text_inputs.shape[1] != 1:
-# 				loss_text_color = self.clip_loss(x_hat, color_text_inputs).mean()
-# 				loss_dict['loss_text_color'] = float(loss_text_color)
-# 				loss += loss_text_color * self.opts.text_manipulation_lambda
-
-# 		if self.opts.image_hairstyle_lambda > 0:
-# 			if hairstyle_tensor.shape[1] != 1:
-# 				if 'hairstyle_out_domain_ref' in selected_description:
-# 					loss_img_hairstyle = self.image_embedding_loss((x_hat * self.average_color_loss.gen_hair_mask(x_hat)), (hairstyle_tensor * self.average_color_loss.gen_hair_mask(hairstyle_tensor))).mean()
-# 					loss_dict['loss_img_hairstyle'] = float(loss_img_hairstyle)
-# 					loss += loss_img_hairstyle * self.opts.image_hairstyle_lambda * self.opts.image_manipulation_lambda
-			
-# 		if self.opts.image_color_lambda > 0:
-# 			if color_tensor.shape[1] != 1:
-# 				loss_img_color = self.average_color_loss(color_tensor, x_hat)
-# 				loss_dict['loss_img_color'] = float(loss_img_color)
-# 				loss += loss_img_color * self.opts.image_color_lambda * self.opts.image_manipulation_lambda
-				
-# 		if self.opts.maintain_color_lambda > 0:
-# 			if ((hairstyle_tensor.shape[1] != 1) or (hairstyle_text_inputs.shape[1] != 1)) and (color_tensor.shape[1] == 1) and (color_text_inputs.shape[1] == 1):
-# 				loss_maintain_color_for_hairstyle = self.maintain_color_for_hairstyle_loss(x, x_hat)
-# 				loss_dict['loss_maintain_color_for_hairstyle'] = float(loss_maintain_color_for_hairstyle)
-# 				loss += loss_maintain_color_for_hairstyle * self.opts.maintain_color_lambda * self.opts.attribute_preservation_lambda
-# 		if self.opts.background_lambda > 0:
-# 			loss_background = self.background_loss(x, x_hat)
-# 			loss_dict['loss_background'] = float(loss_background)
-# 			loss += loss_background * self.opts.background_lambda * self.opts.attribute_preservation_lambda
-# 		if self.opts.latent_l2_lambda > 0:
-# 			loss_l2_latent = self.latent_l2_loss(w_hat, w)
-# 			loss_dict['loss_l2_latent'] = float(loss_l2_latent)
-# 			loss += loss_l2_latent * self.opts.latent_l2_lambda * self.opts.attribute_preservation_lambda
-# 		loss_dict['loss'] = float(loss)
-# 		return loss, loss_dict
-
-	def calc_loss(self, x, y, y_hat, source_text, target_text, latent, directional_source, mismatch_text):
+	def calc_loss(self, x, y, y_hat, source_text, target_text, latent, directional_source, mismatch_text, data_type="real"):
 		loss_dict = {}
 		id_logs = []
 		loss = 0.0
 		if self.opts.id_lambda > 0:
 			loss_id, sim_improvement, id_logs = self.id_loss(y_hat, y, x, label=None, weights=None)
-			loss_dict['loss_id'] = float(loss_id)
-			loss_dict['id_improve'] = float(sim_improvement)
+			loss_dict[f'loss_id_{data_type}'] = float(loss_id)
+			loss_dict[f'id_improve_{data_type}'] = float(sim_improvement)
 			loss = loss_id * self.opts.id_lambda
-		if self.opts.l2_lambda > 0:
+            
+		# if self.opts.l2_lambda > 0:
+		# 	loss_l2 = F.mse_loss(y_hat, y)
+		# 	loss_dict[f'loss_l2_{data_type}'] = float(loss_l2)
+		# 	loss += loss_l2 * self.opts.l2_lambda
+		# if self.opts.lpips_lambda > 0:
+		# 	loss_lpips = self.lpips_loss(y_hat, y)
+		# 	loss_dict[f'loss_lpips_{data_type}'] = float(loss_lpips)
+		# 	loss += loss_lpips * self.opts.lpips_lambda
+            
+		if self.opts.l2_lambda > 0 and data_type=="cycle":
 			loss_l2 = F.mse_loss(y_hat, y)
-			loss_dict['loss_l2'] = float(loss_l2)
+			loss_dict[f'loss_l2_{data_type}'] = float(loss_l2)
 			loss += loss_l2 * self.opts.l2_lambda
-		if self.opts.lpips_lambda > 0:
+		if self.opts.lpips_lambda > 0 and data_type=="cycle":
 			loss_lpips = self.lpips_loss(y_hat, y)
-			loss_dict['loss_lpips'] = float(loss_lpips)
+			loss_dict[f'loss_lpips_{data_type}'] = float(loss_lpips)
 			loss += loss_lpips * self.opts.lpips_lambda
+            
 		# if self.opts.lpips_lambda > 0:
 		# 	loss_lpips_crop = self.lpips_loss(y_hat[:, :, 35:223, 32:220], y[:, :, 35:223, 32:220])
 		# 	loss_dict['loss_lpips_crop'] = float(loss_lpips_crop)
@@ -312,18 +315,20 @@ class Coach:
 		# 	loss += loss_l2_crop * self.opts.l2_lambda_crop
 		if self.opts.w_norm_lambda > 0:
 			loss_w_norm = self.w_norm_loss(latent, latent_avg=self.encoder.latent_avg)
-			loss_dict['loss_w_norm'] = float(loss_w_norm)
+			loss_dict[f'loss_w_norm_{data_type}'] = float(loss_w_norm)
 			loss += loss_w_norm * self.opts.w_norm_lambda
 		# CLIP loss
-		#loss_clip = self.clip_loss(y_hat, target_text).diag().mean()
-		#loss_dict[f'loss_clip_{data_type}'] = float(loss_clip)
-		#loss += loss_clip * 1.0
+		# loss_clip = self.clip_loss(y_hat, target_text).diag().mean()
+		# loss_dict[f'loss_clip_{data_type}'] = float(loss_clip)
+		# loss += loss_clip * 1.0
 		if mismatch_text: 
 			loss_directional = self.directional_loss(directional_source, y_hat, source_text, target_text).mean()
-			loss_dict['loss_directional'] = float(loss_directional)
+			loss_dict[f'loss_directional_{data_type}'] = float(loss_directional)
 			loss += loss_directional * 1.0
    
-		loss_dict['loss'] = float(loss)
+		loss_dict[f'loss_{data_type}'] = float(loss)
+		if data_type == "cycle":
+			loss = loss * self.opts.cycle_lambda
 		return loss, loss_dict, id_logs
     
 	def log_metrics(self, metrics_dict, prefix):
@@ -335,13 +340,14 @@ class Coach:
 		for key, value in metrics_dict.items():
 			print(f'\t{key} = ', value)
 
-	def parse_and_log_images(self, id_logs, x, y, y_hat, txt, mismatch_text, title, subscript=None, display_count=2):
+	def parse_and_log_images(self, id_logs, x, y, y_hat, y_recovered, txt, mismatch_text, title, subscript=None, display_count=2):
 		im_data = []
 		for i in range(display_count):
 			cur_im_data = {
 				'input_face': common.tensor2im(x[i]),
-				'target_face': common.tensor2im(y[i]),
-				'output_face': common.tensor2im(y_hat[i])
+				# 'target_face': common.tensor2im(y[i]),
+				'output_face': common.tensor2im(y_hat[i]),
+                'recovered_face': common.tensor2im(y_recovered[i])
 			}
 			if id_logs is not None:
 				for key in id_logs[i]:
@@ -350,7 +356,7 @@ class Coach:
 		self.log_images(title, txt, mismatch_text, im_data=im_data, subscript=subscript)		
         
 	def log_images(self, name, txt, mismatch_text, im_data, subscript=None, log_latest=False):
-		fig = common.vis_faces(im_data, txt, mismatch_text)
+		fig = common.vis_faces3(im_data, txt, mismatch_text)
 		step = self.global_step
 		if log_latest:
 			step = 0
