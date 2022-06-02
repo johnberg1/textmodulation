@@ -46,7 +46,7 @@ class ImagesTextDataset(Dataset):
         txt_file_dir = self.text_paths[index]
         txt_file = open(txt_file_dir,"r")
         txt = txt_file.read().splitlines()
-        txt = txt[0] #random.choice(txt)
+        txt = random.choice(txt) # txt[0]
 
         return from_im, to_im, txt#, orig # orig if using discriminator
   

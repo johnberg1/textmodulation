@@ -27,7 +27,7 @@ from criteria.clip_loss import CLIPLoss, DirectionalCLIPLoss
 from mapper.hairclip_mapper2 import HairCLIPMapper
 from mapper.training.ranger import Ranger
 from mapper.training import train_utils
-from models.e4e_features2 import pSp
+from models.psp_features2 import pSp
 
 class Coach:
 	def __init__(self, opts):

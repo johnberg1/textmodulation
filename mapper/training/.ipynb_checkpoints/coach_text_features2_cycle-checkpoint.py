@@ -185,7 +185,7 @@ class Coach:
 
 				
 
-				mismatch_text = random.random() <= (3. / 4) # change
+				mismatch_text = random.random() <= (4. / 4) # change
 				if mismatch_text:
 					txt_embed_mismatch = torch.roll(txt_embed_original, 1, dims=0)
 					text_mismatch = torch.roll(text_original, 1, dims=0)
@@ -287,23 +287,24 @@ class Coach:
 			loss_dict[f'id_improve_{data_type}'] = float(sim_improvement)
 			loss = loss_id * self.opts.id_lambda
             
-		# if self.opts.l2_lambda > 0:
-		# 	loss_l2 = F.mse_loss(y_hat, y)
-		# 	loss_dict[f'loss_l2_{data_type}'] = float(loss_l2)
-		# 	loss += loss_l2 * self.opts.l2_lambda
-		# if self.opts.lpips_lambda > 0:
-		# 	loss_lpips = self.lpips_loss(y_hat, y)
-		# 	loss_dict[f'loss_lpips_{data_type}'] = float(loss_lpips)
-		# 	loss += loss_lpips * self.opts.lpips_lambda
-            
-		if self.opts.l2_lambda > 0 and data_type=="cycle":
+		if self.opts.l2_lambda > 0:
 			loss_l2 = F.mse_loss(y_hat, y)
 			loss_dict[f'loss_l2_{data_type}'] = float(loss_l2)
 			loss += loss_l2 * self.opts.l2_lambda
-		if self.opts.lpips_lambda > 0 and data_type=="cycle":
+            
+		if self.opts.lpips_lambda > 0:
 			loss_lpips = self.lpips_loss(y_hat, y)
 			loss_dict[f'loss_lpips_{data_type}'] = float(loss_lpips)
 			loss += loss_lpips * self.opts.lpips_lambda
+            
+		# if self.opts.l2_lambda > 0 and data_type=="cycle":
+		# 	loss_l2 = F.mse_loss(y_hat, y)
+		# 	loss_dict[f'loss_l2_{data_type}'] = float(loss_l2)
+		# 	loss += loss_l2 * self.opts.l2_lambda
+		# if self.opts.lpips_lambda > 0 and data_type=="cycle":
+		# 	loss_lpips = self.lpips_loss(y_hat, y)
+		# 	loss_dict[f'loss_lpips_{data_type}'] = float(loss_lpips)
+		# 	loss += loss_lpips * self.opts.lpips_lambda
             
 		# if self.opts.lpips_lambda > 0:
 		# 	loss_lpips_crop = self.lpips_loss(y_hat[:, :, 35:223, 32:220], y[:, :, 35:223, 32:220])
