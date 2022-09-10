@@ -10,7 +10,7 @@ sys.path.append(".")
 sys.path.append("..")
 
 from mapper.options.train_options import TrainOptions
-from mapper.training.coach_text_features import Coach
+from mapper.training.coach_text import Coach
 
 
 def main(opts):
