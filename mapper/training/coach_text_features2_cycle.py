@@ -24,7 +24,7 @@ from criteria.clip_loss import CLIPLoss, DirectionalCLIPLoss
 # import criteria.image_embedding_loss as image_embedding_loss
 # from criteria import id_loss
 # from mapper.datasets.latents_dataset import LatentsDataset
-from mapper.hairclip_mapper2 import HairCLIPMapper
+from mapper.hairclip_mapper_gn import HairCLIPMapper
 from mapper.training.ranger import Ranger
 from mapper.training import train_utils
 from models.e4e_features2 import pSp
