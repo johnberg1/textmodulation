@@ -82,6 +82,18 @@ def vis_faces(log_hooks, txt, mismatch_text):
 	plt.tight_layout()
 	return fig
 
+# this is for image conditioning inversion
+def vis_faces_without_text(log_hooks):
+	display_count = len(log_hooks)
+	fig = plt.figure(figsize=(12, 3 * display_count))
+	gs = fig.add_gridspec(display_count, 3)
+	for i in range(display_count):
+		hooks_dict = log_hooks[i]
+		vis_faces_with_age(hooks_dict, fig, gs, i)
+	plt.tight_layout()
+	return fig
+
+
 # This is to plot the cycle too
 def vis_faces3(log_hooks, txt, mismatch_text):
 	display_count = len(log_hooks)

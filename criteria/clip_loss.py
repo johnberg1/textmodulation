@@ -12,6 +12,28 @@ class CLIPLoss(nn.Module):
         image = self.avg_pool(self.upsample(image))
         similarity = 1 - self.model(image,text)[0] / 100
         return similarity
+    
+class CLIPImageLoss(nn.Module):    
+    def __init__(self, model, StyleGAN_size=256):
+        super(CLIPImageLoss, self).__init__()
+        self.model = model
+        self.upsample = nn.Upsample(scale_factor=7)
+        self.avg_pool = nn.AvgPool2d(kernel_size=StyleGAN_size // 32)
+
+    def forward(self, image1, image2):
+        image1 = self.avg_pool(self.upsample(image1))
+        image2 = self.avg_pool(self.upsample(image2))
+        image1_features = self.model.encode_image(image1)
+        image2_features = self.model.encode_image(image2)
+        
+        image1_features = image1_features / image1_features.norm(dim=1, keepdim=True)
+        image2_features = image2_features / image2_features.norm(dim=1, keepdim=True)
+        
+        logit_scale = self.model.logit_scale.exp()
+        logits_per_image = logit_scale * image1_features @ image2_features.t()
+        
+        similarity = 1 - logits_per_image / 100
+        return similarity
 		
 class DirectionalCLIPLoss(nn.Module):    
     def __init__(self, model, StyleGAN_size=256):

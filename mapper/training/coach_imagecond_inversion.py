@@ -17,17 +17,18 @@ from criteria import id_loss, w_norm
 # from criteria.parse_related_loss import bg_loss, average_lab_color_loss
 # import criteria.clip_loss as clip_loss
 from configs import data_configs
-from datasets.images_text_dataset import ImagesTextDataset
+from datasets.images_dataset import ImagesTextDataset
 from criteria.lpips.lpips import LPIPS
-from criteria.clip_loss import CLIPLoss, DirectionalCLIPLoss
+from criteria.clip_loss import CLIPImageLoss
 
 # import criteria.image_embedding_loss as image_embedding_loss
 # from criteria import id_loss
 # from mapper.datasets.latents_dataset import LatentsDataset
-from mapper.hairclip_mapper import HairCLIPMapper
+from mapper.hairclip_mapper2 import HairCLIPMapper
 from mapper.training.ranger import Ranger
 from mapper.training import train_utils
-from models.e4e import pSp
+from models.e4e_features2 import pSp
+import wandb
 
 class Coach:
 	def __init__(self, opts):
@@ -41,18 +42,15 @@ class Coach:
 		self.net = HairCLIPMapper(self.opts).to(self.device)
 		self.encoder = pSp(self.opts).to(self.device).eval()
 		self.face_pool = torch.nn.AdaptiveAvgPool2d((256, 256))
+		self.upsample = nn.Upsample(scale_factor=7)
+		self.avg_pool = nn.AvgPool2d(kernel_size=256 // 32)
 	
 		# Initialize loss
 		self.id_loss = id_loss.IDLoss().to(self.device).eval()
 		self.mse_loss = nn.MSELoss().to(self.device).eval()
-		self.directional_loss = DirectionalCLIPLoss(self.clip_model)
+		self.clip_loss = CLIPImageLoss(self.clip_model)
 		self.lpips_loss = LPIPS(net_type='alex').to(self.device).eval()
 		self.w_norm_loss = w_norm.WNormLoss(opts=self.opts)
-		# self.latent_l2_loss = nn.MSELoss().to(self.device).eval()
-		# self.background_loss = bg_loss.BackgroundLoss(self.opts).to(self.device).eval()
-		# self.image_embedding_loss = image_embedding_loss.ImageEmbddingLoss()
-		# self.average_color_loss = average_lab_color_loss.AvgLabLoss(self.opts).to(self.device).eval()
-		# self.maintain_color_for_hairstyle_loss = average_lab_color_loss.AvgLabLoss(self.opts).to(self.device).eval()
 
 		# Initialize optimizer
 		self.optimizer = self.configure_optimizers()
@@ -77,6 +75,10 @@ class Coach:
 		os.makedirs(log_dir, exist_ok=True)
 		self.log_dir = log_dir
 		self.logger = SummaryWriter(log_dir=log_dir)
+        
+        # Wandb
+		wandb.init(project="image conditioned inversion")
+		wandb.config = {"iterations" : self.opts.max_steps, "learning_rate" : self.opts.learning_rate}
 
 		# Initialize checkpoint dir
 		self.checkpoint_dir = os.path.join(opts.exp_dir, 'checkpoints')
@@ -89,37 +91,35 @@ class Coach:
 		self.net.train()
 		while self.global_step < self.opts.max_steps:
 			for batch_idx, batch in enumerate(self.train_dataloader):
-				x, y, txt = batch
+				x, y = batch
 				x, y = x.to(self.device).float(), y.to(self.device).float()
-				text_original = clip.tokenize(txt).to(self.device)
+				condition_image = self.avg_pool(self.upsample(x)).to(self.device)
 				with torch.no_grad():
-					txt_embed_original = self.clip_model.encode_text(text_original)
-				txt_embed_original = txt_embed_original.to(self.device).float()
+					clip_embedding = self.clip_model.encode_image(condition_image)
+				clip_embedding = clip_embedding.to(self.device).float()
 				self.optimizer.zero_grad()
                 
-                
-				mismatch_text = random.random() <= (3. / 4)
-				if mismatch_text:
-					txt_embed_mismatch = torch.roll(txt_embed_original, 1, dims=0)
-					text_mismatch = torch.roll(text_original, 1, dims=0)
-				else:
-					txt_embed_mismatch = txt_embed_original
-					text_mismatch = text_original
-                
 				with torch.no_grad():
-					w = self.encoder.forward(x, return_latents=True)
-		
-				w_hat = w + 0.1 * self.net.mapper(w, txt_embed_mismatch)
+					w, features = self.encoder.forward(x, return_latents=True)
+                
+				features = self.net.mapper(features, clip_embedding)
+				w_hat = w + self.encoder.forward_features(features)
 				y_hat, w_hat = self.net.decoder([w_hat], input_is_latent=True, return_latents=True, randomize_noise=False, truncation=1)
 				y_hat = self.face_pool(y_hat)
-				loss, loss_dict, id_logs = self.calc_loss(x, y, y_hat, text_original, text_mismatch, w_hat, y, mismatch_text)
+				loss, loss_dict, id_logs = self.calc_loss(x, y, y_hat, w_hat)
 				loss.backward()
 				self.optimizer.step()
+                
+				wandb.log({"l2_loss": loss_dict['loss_l2'],
+                           "lpips_loss": loss_dict['loss_lpips'],
+                           "id_loss": loss_dict['loss_id'],
+                           "w_norm_loss": loss_dict['loss_w_norm'],
+                           "clip_loss": loss_dict['loss_clip']})
                 
                 # Logging related
 				if self.global_step % self.opts.image_interval == 0 or \
 						(self.global_step < 1000 and self.global_step % 25 == 0):
-					self.parse_and_log_images(id_logs, x, y, y_hat, txt, mismatch_text,
+					self.parse_and_log_images(id_logs, x, y, y_hat,
 											  title='images/train/faces')
 
 				if self.global_step % self.opts.board_interval == 0:
@@ -151,35 +151,26 @@ class Coach:
 		agg_loss_dict = []
 		for batch_idx, batch in enumerate(self.test_dataloader):
             
-			x, y, txt = batch
-			text_original = clip.tokenize(txt).to(self.device)
+			x, y = batch
+			condition_image = self.avg_pool(self.upsample(x)).to(self.device)
 			with torch.no_grad():
-				txt_embed_original = self.clip_model.encode_text(text_original)
-				txt_embed_original = txt_embed_original.to(self.device).float()
+				clip_embedding = self.clip_model.encode_image(condition_image)
+				clip_embedding = clip_embedding.to(self.device).float()
 				x, y = x.to(self.device).float(), y.to(self.device).float()
-
-				
-
-				mismatch_text = random.random() <= (3. / 4)
-				if mismatch_text:
-					txt_embed_mismatch = torch.roll(txt_embed_original, 1, dims=0)
-					text_mismatch = torch.roll(text_original, 1, dims=0)
-				else:
-					txt_embed_mismatch = txt_embed_original
-					text_mismatch = text_original
                     
-                    
-				w = self.encoder.forward(x, return_latents=True)
-				w_hat = w + 0.1 * self.net.mapper(w, txt_embed_mismatch)
+                
+				w, features = self.encoder.forward(x, return_latents=True)
+				features = self.net.mapper(features, clip_embedding)
+				w_hat = w + self.encoder.forward_features(features)
 				y_hat, w_hat = self.net.decoder([w_hat], input_is_latent=True, return_latents=True, randomize_noise=False, truncation=1)
 				y_hat = self.face_pool(y_hat)
-				loss, cur_loss_dict, id_logs = self.calc_loss(x, y, y_hat, text_original, text_mismatch, w_hat, y, mismatch_text)
+				loss, cur_loss_dict, id_logs = self.calc_loss(x, y, y_hat, w_hat)
                 
 			agg_loss_dict.append(cur_loss_dict)
 
 			
 			# Logging related
-			self.parse_and_log_images(id_logs, x, y, y_hat, txt, mismatch_text, title='images/test/faces',
+			self.parse_and_log_images(id_logs, x, y, y_hat, title='images/test/faces',
 									  subscript='{:04d}'.format(batch_idx))
 
 			# For first step just do sanity test on small amount of data
@@ -231,55 +222,7 @@ class Coach:
 		print("Number of test samples: {}".format(len(test_dataset)), flush=True)
 		return train_dataset, test_dataset
 
-# 	def calc_loss(self, w, x, w_hat, x_hat, hairstyle_text_inputs, color_text_inputs, hairstyle_tensor, color_tensor, selected_description):
-# 		loss_dict = {}
-# 		loss = 0.0
-# 		if self.opts.id_lambda > 0:
-# 			loss_id, sim_improvement = self.id_loss(x_hat, x)
-# 			loss_dict['loss_id'] = float(loss_id)
-# 			loss_dict['id_improve'] = float(sim_improvement)
-# 			loss = loss_id * self.opts.id_lambda * self.opts.attribute_preservation_lambda
-
-# 		if self.opts.text_manipulation_lambda > 0:
-# 			if hairstyle_text_inputs.shape[1] != 1:
-# 				loss_text_hairstyle = self.clip_loss(x_hat, hairstyle_text_inputs).mean()
-# 				loss_dict['loss_text_hairstyle'] = float(loss_text_hairstyle)
-# 				loss += loss_text_hairstyle * self.opts.text_manipulation_lambda
-# 			if color_text_inputs.shape[1] != 1:
-# 				loss_text_color = self.clip_loss(x_hat, color_text_inputs).mean()
-# 				loss_dict['loss_text_color'] = float(loss_text_color)
-# 				loss += loss_text_color * self.opts.text_manipulation_lambda
-
-# 		if self.opts.image_hairstyle_lambda > 0:
-# 			if hairstyle_tensor.shape[1] != 1:
-# 				if 'hairstyle_out_domain_ref' in selected_description:
-# 					loss_img_hairstyle = self.image_embedding_loss((x_hat * self.average_color_loss.gen_hair_mask(x_hat)), (hairstyle_tensor * self.average_color_loss.gen_hair_mask(hairstyle_tensor))).mean()
-# 					loss_dict['loss_img_hairstyle'] = float(loss_img_hairstyle)
-# 					loss += loss_img_hairstyle * self.opts.image_hairstyle_lambda * self.opts.image_manipulation_lambda
-			
-# 		if self.opts.image_color_lambda > 0:
-# 			if color_tensor.shape[1] != 1:
-# 				loss_img_color = self.average_color_loss(color_tensor, x_hat)
-# 				loss_dict['loss_img_color'] = float(loss_img_color)
-# 				loss += loss_img_color * self.opts.image_color_lambda * self.opts.image_manipulation_lambda
-				
-# 		if self.opts.maintain_color_lambda > 0:
-# 			if ((hairstyle_tensor.shape[1] != 1) or (hairstyle_text_inputs.shape[1] != 1)) and (color_tensor.shape[1] == 1) and (color_text_inputs.shape[1] == 1):
-# 				loss_maintain_color_for_hairstyle = self.maintain_color_for_hairstyle_loss(x, x_hat)
-# 				loss_dict['loss_maintain_color_for_hairstyle'] = float(loss_maintain_color_for_hairstyle)
-# 				loss += loss_maintain_color_for_hairstyle * self.opts.maintain_color_lambda * self.opts.attribute_preservation_lambda
-# 		if self.opts.background_lambda > 0:
-# 			loss_background = self.background_loss(x, x_hat)
-# 			loss_dict['loss_background'] = float(loss_background)
-# 			loss += loss_background * self.opts.background_lambda * self.opts.attribute_preservation_lambda
-# 		if self.opts.latent_l2_lambda > 0:
-# 			loss_l2_latent = self.latent_l2_loss(w_hat, w)
-# 			loss_dict['loss_l2_latent'] = float(loss_l2_latent)
-# 			loss += loss_l2_latent * self.opts.latent_l2_lambda * self.opts.attribute_preservation_lambda
-# 		loss_dict['loss'] = float(loss)
-# 		return loss, loss_dict
-
-	def calc_loss(self, x, y, y_hat, source_text, target_text, latent, directional_source, mismatch_text):
+	def calc_loss(self, x, y, y_hat, latent):
 		loss_dict = {}
 		id_logs = []
 		loss = 0.0
@@ -296,26 +239,13 @@ class Coach:
 			loss_lpips = self.lpips_loss(y_hat, y)
 			loss_dict['loss_lpips'] = float(loss_lpips)
 			loss += loss_lpips * self.opts.lpips_lambda
-		# if self.opts.lpips_lambda > 0:
-		# 	loss_lpips_crop = self.lpips_loss(y_hat[:, :, 35:223, 32:220], y[:, :, 35:223, 32:220])
-		# 	loss_dict['loss_lpips_crop'] = float(loss_lpips_crop)
-		# 	loss += loss_lpips_crop * self.opts.lpips_lambda
-		# if self.opts.l2_lambda_crop > 0:
-		# 	loss_l2_crop = F.mse_loss(y_hat[:, :, 35:223, 32:220], y[:, :, 35:223, 32:220])
-		# 	loss_dict['loss_l2_crop'] = float(loss_l2_crop)
-		# 	loss += loss_l2_crop * self.opts.l2_lambda_crop
 		if self.opts.w_norm_lambda > 0:
 			loss_w_norm = self.w_norm_loss(latent, latent_avg=self.encoder.latent_avg)
 			loss_dict['loss_w_norm'] = float(loss_w_norm)
 			loss += loss_w_norm * self.opts.w_norm_lambda
-		# CLIP loss
-		#loss_clip = self.clip_loss(y_hat, target_text).diag().mean()
-		#loss_dict[f'loss_clip_{data_type}'] = float(loss_clip)
-		#loss += loss_clip * 1.0
-		if mismatch_text: 
-			loss_directional = self.directional_loss(directional_source, y_hat, source_text, target_text).mean()
-			loss_dict['loss_directional'] = float(loss_directional)
-			loss += loss_directional * 1.0
+		loss_clip = self.clip_loss(y_hat, y).diag().mean()
+		loss_dict['loss_clip'] = float(loss_clip)
+		loss += loss_clip * 1.0
    
 		loss_dict['loss'] = float(loss)
 		return loss, loss_dict, id_logs
@@ -329,7 +259,7 @@ class Coach:
 		for key, value in metrics_dict.items():
 			print(f'\t{key} = ', value)
 
-	def parse_and_log_images(self, id_logs, x, y, y_hat, txt, mismatch_text, title, subscript=None, display_count=2):
+	def parse_and_log_images(self, id_logs, x, y, y_hat, title, subscript=None, display_count=2):
 		im_data = []
 		for i in range(display_count):
 			cur_im_data = {
@@ -341,10 +271,10 @@ class Coach:
 				for key in id_logs[i]:
 					cur_im_data[key] = id_logs[i][key]
 			im_data.append(cur_im_data)
-		self.log_images(title, txt, mismatch_text, im_data=im_data, subscript=subscript)		
+		self.log_images(title, im_data=im_data, subscript=subscript)		
         
-	def log_images(self, name, txt, mismatch_text, im_data, subscript=None, log_latest=False):
-		fig = common.vis_faces(im_data, txt, mismatch_text)
+	def log_images(self, name, im_data, subscript=None, log_latest=False):
+		fig = common.vis_faces_without_text(im_data)
 		step = self.global_step
 		if log_latest:
 			step = 0
@@ -361,7 +291,7 @@ class Coach:
 			'state_dict': self.net.state_dict(),
 			'opts': vars(self.opts)
 		}
-		# save the latent avg in state_dict for inference if truncation of w was used during training
-		if self.encoder.latent_avg is not None:
-			save_dict['latent_avg'] = self.encoder.latent_avg
+		# # save the latent avg in state_dict for inference if truncation of w was used during training
+		# if self.encoder.latent_avg is not None:
+		# 	save_dict['latent_avg'] = self.encoder.latent_avg
 		return save_dict

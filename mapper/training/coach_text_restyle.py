@@ -27,7 +27,7 @@ from criteria.clip_loss import CLIPLoss, DirectionalCLIPLoss
 from mapper.hairclip_mapper import HairCLIPMapper
 from mapper.training.ranger import Ranger
 from mapper.training import train_utils
-from models.e4e import pSp
+from models.restyle import pSp
 
 class Coach:
 	def __init__(self, opts):
@@ -70,7 +70,14 @@ class Coach:
 										  num_workers=int(self.opts.test_workers),
 										  drop_last=True)
 
-
+		# get the image corresponding to the latent average
+		self.avg_image, _ = self.net.decoder([self.encoder.latent_avg.unsqueeze(0)],
+                                            input_is_latent=True,
+                                            randomize_noise=False,
+                                            return_latents=False)
+		self.avg_image = self.face_pool(self.avg_image)
+		self.avg_image = self.avg_image.to(self.device).squeeze(0).float().detach()
+		common.tensor2im(self.avg_image).save(os.path.join(self.opts.exp_dir, 'avg_image.jpg'))
 
 		# Initialize logger
 		log_dir = os.path.join(opts.exp_dir, 'logs')
@@ -84,7 +91,25 @@ class Coach:
 		self.best_val_loss = None
 		if self.opts.save_interval is None:
 			self.opts.save_interval = self.opts.max_steps
+            
+	def perform_train_iteration_on_batch(self, x):
+		y_hat, latent = None, None
+		for iter in range(5):
+			if iter == 0:
+				avg_image_for_batch = self.avg_image.unsqueeze(0).repeat(x.shape[0], 1, 1, 1)
+				x_input = torch.cat([x, avg_image_for_batch], dim=1)
+				latent = self.encoder.forward(x_input, latent=None, return_latents=True)
+				y_hat, _ = self.net.decoder([latent], input_is_latent=True, randomize_noise=False, return_latents=False)
+			else:
+				y_hat_clone = y_hat.clone().detach().requires_grad_(True)
+				latent_clone = latent.clone().detach().requires_grad_(True)
+				x_input = torch.cat([x, y_hat_clone], dim=1)
+				latent = self.encoder.forward(x_input, latent=latent_clone, return_latents=True)
+				y_hat, _ = self.net.decoder([latent], input_is_latent=True, randomize_noise=False, return_latents=False)
+			y_hat = self.face_pool(y_hat)
 
+		return latent
+    
 	def train(self):
 		self.net.train()
 		while self.global_step < self.opts.max_steps:
@@ -107,7 +132,7 @@ class Coach:
 					text_mismatch = text_original
                 
 				with torch.no_grad():
-					w = self.encoder.forward(x, return_latents=True)
+					w = self.perform_train_iteration_on_batch(x)
 		
 				w_hat = w + 0.1 * self.net.mapper(w, txt_embed_mismatch)
 				y_hat, w_hat = self.net.decoder([w_hat], input_is_latent=True, return_latents=True, randomize_noise=False, truncation=1)
@@ -160,7 +185,7 @@ class Coach:
 
 				
 
-				mismatch_text = random.random() <= (3. / 4)
+				mismatch_text = random.random() <= (4. / 4)
 				if mismatch_text:
 					txt_embed_mismatch = torch.roll(txt_embed_original, 1, dims=0)
 					text_mismatch = torch.roll(text_original, 1, dims=0)
@@ -169,7 +194,7 @@ class Coach:
 					text_mismatch = text_original
                     
                     
-				w = self.encoder.forward(x, return_latents=True)
+				w = self.perform_train_iteration_on_batch(x)
 				w_hat = w + 0.1 * self.net.mapper(w, txt_embed_mismatch)
 				y_hat, w_hat = self.net.decoder([w_hat], input_is_latent=True, return_latents=True, randomize_noise=False, truncation=1)
 				y_hat = self.face_pool(y_hat)
